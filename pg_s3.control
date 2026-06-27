@@ -1,0 +1,6 @@
+# pg_s3 extension
+comment = 'S3-compatible object storage integration for PostgreSQL'
+default_version = '1.0'
+module_pathname = '$libdir/pg_s3'
+relocatable = false
+schema = 'ext_pg_s3'
