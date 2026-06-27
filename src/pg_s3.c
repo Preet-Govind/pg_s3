@@ -27,6 +27,7 @@ char *s3_access_key = NULL;
 char *s3_secret_key = NULL;
 char *s3_bucket = NULL;
 bool s3_use_temp_files = false;
+bool s3_use_virtual_host = false;
 
 void _PG_init(void);
 
@@ -87,6 +88,14 @@ void _PG_init(void) {
                              "Use temporary files for large datasets instead of RAM",
                              NULL,
                              &s3_use_temp_files,
+                             false,
+                             PGC_USERSET,
+                             0, NULL, NULL, NULL);
+
+    DefineCustomBoolVariable("pg_s3.use_virtual_host",
+                             "Use Virtual-Hosted Style URLs (e.g. bucket.s3.amazonaws.com) instead of Path-Style",
+                             NULL,
+                             &s3_use_virtual_host,
                              false,
                              PGC_USERSET,
                              0, NULL, NULL, NULL);

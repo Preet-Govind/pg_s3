@@ -6,14 +6,14 @@
 Isn't it be boring to write 50+ lines of code just to move files of a few MBs , keep orchestration apart ?
 
 ## Features
-- **Native SQL API:** Simple, intuitive functions for managing S3 objects.
-- **AWS Signature Version 4:** Fully authenticated requests to any S3-compatible storage.
+- **Native SQL API:** Simple functions for managing S3 objects.
+- **AWS Signature Version 4:** authenticated requests to S3-compatible storage.
 - **Stateless/Configurable:** Connection properties are configured via GUC variables for ease of use, with support for per-query credential overrides.
 - **Botocore-Grade Errors:** S3 XML errors are natively propagated to the PostgreSQL error output via `ereport(ERROR)`.
 - **Zero-Memory Copying:** Native support for the S3 `CopyObject` API for instant, memory-free transfers within the same ecosystem.
 - **Cross-Cloud Migration:** Ability to pipe data between isolated S3 clusters using pure SQL.
-- **Pagination Support:** Advanced `continuation_token` handling to seamlessly query buckets with >1,000 objects.
-- **Dedicated Schema:** Automatically isolates all functions into the `ext_pg_s3` schema to prevent namespace pollution.
+- **Pagination Support:** `continuation_token` handling to query buckets with >1,000 objects.
+- **Dedicated Schema:** `ext_pg_s3` .
 
 ---
 
@@ -198,8 +198,8 @@ create extension pg_s3 ;
 
 ### What intentionally DID NOT implement:
 1. **Multipart Uploads (`upload_part`, `create_multipart_upload`):** S3 allows single PUTs up to 5 GB. Since PostgreSQL itself has a hard limit of 1 GB for a single `text` cell, we don't need multipart uploads. A standard `s3_put` is already perfectly optimized for anything PostgreSQL can hold.
-2. **Advanced Bucket Administration:** Things like `put_bucket_cors`, `put_bucket_lifecycle_configuration`, `put_object_acl`, and `put_bucket_versioning`. These are usually infrastructure-as-code tasks (like Terraform) and don't typically belong in daily SQL queries.
-3. **DeleteObjects (Multi-delete):** We only have single object deletion right now. 
+2. **Bucket Administration:** Things like `put_bucket_cors`, `put_bucket_lifecycle_configuration`, `put_object_acl`, and `put_bucket_versioning`. These are usually infrastructure-as-code tasks (like Terraform) and don't typically belong in daily SQL queries.
+3. **DeleteObjects (Multi-delete):** We only have single object deletion right now, to avoid bucket mess-ups.
 
 ### Conclusion
 it isolates itself into the `ext_pg_s3` schema, properly handles AWS Signature V4 without external libraries, parses native S3 XML errors directly into PostgreSQL error logs, handles pagination gracefully, and allows dynamic cross-cloud migration. 
@@ -225,5 +225,4 @@ If you wish to contribute to the extension or understand the codebase, here is a
 2.  **Memory Management:** Always use `palloc()` and `pfree()` instead of standard `malloc()` when within the PostgreSQL context to prevent memory leaks during query aborts. Use `StringInfo` for dynamic string building.
 3.  **SQL Binding:** After adding a C function with `PG_FUNCTION_INFO_V1(my_new_func)`, update `sql/pg_s3--1.0.sql` to expose the function to SQL.
 4.  **Error Handling:** Use `ereport(ERROR, ...)` so errors seamlessly propagate to the SQL client.
-5.  **Rebuilding:** Simply run `sudo ./build.sh` and `DROP EXTENSION pg_s3; CREATE EXTENSION pg_s3;` to reload your changes.
-
+5.  **Re-building:** Simply run `sudo ./build.sh` and `DROP EXTENSION pg_s3; CREATE EXTENSION pg_s3;` to reload your changes.

@@ -14,6 +14,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+extern bool s3_use_virtual_host;
+
 // helper function to parse endpoint into host and protocol
 static void parse_endpoint(const char *endpoint, char *host, char *protocol) {
     char *slash;
@@ -29,6 +31,35 @@ static void parse_endpoint(const char *endpoint, char *host, char *protocol) {
     }
     slash = strchr(host, '/');
     if (slash) *slash = '\0';
+}
+
+static void build_s3_url(const char *endpoint, const char *bucket, const char *object_key,
+                         char *host, char *protocol, char *path, char *url) {
+    char base_host[256];
+    const char *safe_key = (object_key && object_key[0] == '/') ? object_key + 1 : (object_key ? object_key : "");
+
+    parse_endpoint(endpoint, base_host, protocol);
+
+    if (s3_use_virtual_host && bucket && bucket[0]) {
+        snprintf(host, 256, "%s.%s", bucket, base_host);
+        if (object_key) {
+            snprintf(path, 1024, "/%s", safe_key);
+        } else {
+            snprintf(path, 1024, "/");
+        }
+    } else {
+        strcpy(host, base_host);
+        if (bucket && bucket[0]) {
+            if (object_key) {
+                snprintf(path, 1024, "/%s/%s", bucket, safe_key);
+            } else {
+                snprintf(path, 1024, "/%s", bucket);
+            }
+        } else {
+            snprintf(path, 1024, "/");
+        }
+    }
+    snprintf(url, 2048, "%s%s%s", protocol, host, path);
 }
 
 // helper function to handle s3 XML error responses and bubble them to pgsql
@@ -52,10 +83,11 @@ char* s3_api_get(const char *endpoint, const char *region, const char *access_ke
     char *auth_headers;
     HttpResponse resp;
 
-    parse_endpoint(endpoint, host, protocol);
-    snprintf(path, sizeof(path), "/%s/%s", bucket, object_key);
-    snprintf(url, sizeof(url), "%s%s%s", protocol, host, path);
+    build_s3_url(endpoint, bucket, object_key, host, protocol, path, url);
     
+    ereport(NOTICE, (errmsg("DEBUG: GET Request URL: %s", url)));
+    ereport(NOTICE, (errmsg("DEBUG: GET Request Path: %s", path)));
+
     auth_headers = s3_create_authorization_headers("GET", host, path, "", region, access_key, secret_key, NULL, 0, NULL, NULL);
     
     resp = s3_http_request("GET", url, auth_headers, NULL, 0, NULL);
@@ -83,9 +115,7 @@ bool s3_api_put(const char *endpoint, const char *region, const char *access_key
     char *auth_headers;
     HttpResponse resp;
 
-    parse_endpoint(endpoint, host, protocol);
-    snprintf(path, sizeof(path), "/%s/%s", bucket, object_key);
-    snprintf(url, sizeof(url), "%s%s%s", protocol, host, path);
+    build_s3_url(endpoint, bucket, object_key, host, protocol, path, url);
     
     auth_headers = s3_create_authorization_headers("PUT", host, path, "", region, access_key, secret_key, content, content_len, content_type, NULL);
     
@@ -108,9 +138,7 @@ bool s3_api_delete(const char *endpoint, const char *region, const char *access_
     char *auth_headers;
     HttpResponse resp;
 
-    parse_endpoint(endpoint, host, protocol);
-    snprintf(path, sizeof(path), "/%s/%s", bucket, object_key);
-    snprintf(url, sizeof(url), "%s%s%s", protocol, host, path);
+    build_s3_url(endpoint, bucket, object_key, host, protocol, path, url);
     
     auth_headers = s3_create_authorization_headers("DELETE", host, path, "", region, access_key, secret_key, NULL, 0, NULL, NULL);
     
@@ -135,11 +163,11 @@ char* s3_api_list(const char *endpoint, const char *region, const char *access_k
     char *auth_headers;
     HttpResponse resp;
 
-    parse_endpoint(endpoint, host, protocol);
-    snprintf(path, sizeof(path), "/%s", bucket);
+    build_s3_url(endpoint, bucket, NULL, host, protocol, path, url);
     
     if (prefix && prefix[0]) {
-        snprintf(query + strlen(query), sizeof(query) - strlen(query), "&prefix=%s", prefix);
+        const char *safe_prefix = prefix[0] == '/' ? prefix + 1 : prefix;
+        snprintf(query + strlen(query), sizeof(query) - strlen(query), "&prefix=%s", safe_prefix);
     }
     if (continuation_token && continuation_token[0]) {
         snprintf(query + strlen(query), sizeof(query) - strlen(query), "&continuation-token=%s", continuation_token);
@@ -169,9 +197,7 @@ bool s3_api_create_bucket(const char *endpoint, const char *region, const char *
     char *auth_headers;
     HttpResponse resp;
 
-    parse_endpoint(endpoint, host, protocol);
-    snprintf(path, sizeof(path), "/%s/", bucket);
-    snprintf(url, sizeof(url), "%s%s%s", protocol, host, path);
+    build_s3_url(endpoint, bucket, NULL, host, protocol, path, url);
     
     auth_headers = s3_create_authorization_headers("PUT", host, path, "", region, access_key, secret_key, NULL, 0, NULL, NULL);
     
@@ -194,9 +220,7 @@ bool s3_api_delete_bucket(const char *endpoint, const char *region, const char *
     char *auth_headers;
     HttpResponse resp;
 
-    parse_endpoint(endpoint, host, protocol);
-    snprintf(path, sizeof(path), "/%s/", bucket);
-    snprintf(url, sizeof(url), "%s%s%s", protocol, host, path);
+    build_s3_url(endpoint, bucket, NULL, host, protocol, path, url);
     
     auth_headers = s3_create_authorization_headers("DELETE", host, path, "", region, access_key, secret_key, NULL, 0, NULL, NULL);
     
@@ -216,9 +240,9 @@ bool s3_api_delete_bucket(const char *endpoint, const char *region, const char *
 char* s3_api_presign(const char *endpoint, const char *region, const char *access_key, const char *secret_key, const char *bucket, const char *object_key, long expires) {
     char host[256], protocol[16];
     char path[1024];
+    char dummy_url[2048];
 
-    parse_endpoint(endpoint, host, protocol);
-    snprintf(path, sizeof(path), "/%s/%s", bucket, object_key);
+    build_s3_url(endpoint, bucket, object_key, host, protocol, path, dummy_url);
 
     return s3_create_presigned_url("GET", host, protocol, path, region, access_key, secret_key, expires);
 }
@@ -231,11 +255,10 @@ bool s3_api_copy(const char *endpoint, const char *region, const char *access_ke
     char url[2048];
     char *auth_headers;
     HttpResponse resp;
+    const char *safe_source = source_key[0] == '/' ? source_key + 1 : source_key;
 
-    parse_endpoint(endpoint, host, protocol);
-    snprintf(path, sizeof(path), "/%s/%s", target_bucket, target_key);
-    snprintf(url, sizeof(url), "%s%s%s", protocol, host, path);
-    snprintf(copy_source, sizeof(copy_source), "/%s/%s", source_bucket, source_key);
+    build_s3_url(endpoint, target_bucket, target_key, host, protocol, path, url);
+    snprintf(copy_source, sizeof(copy_source), "/%s/%s", source_bucket, safe_source);
     
     auth_headers = s3_create_authorization_headers("PUT", host, path, "", region, access_key, secret_key, NULL, 0, NULL, copy_source);
     
@@ -256,18 +279,16 @@ bool s3_api_get_to_file(const char *endpoint, const char *region, const char *ac
     char *headers;
     long status;
     char path[1024];
-    char *host;
+    char host[256], protocol[16];
 
     if (!endpoint || !region || !access_key || !secret_key || !bucket || !object_key || !filepath) {
         return false;
     }
 
-    host = strstr(endpoint, "://");
-    if (host) host += 3;
-    else host = (char *)endpoint;
+    build_s3_url(endpoint, bucket, object_key, host, protocol, path, url);
 
-    snprintf(url, sizeof(url), "%s/%s/%s", endpoint, bucket, object_key);
-    snprintf(path, sizeof(path), "/%s/%s", bucket, object_key);
+    ereport(NOTICE, (errmsg("DEBUG: GET-TO-FILE Request URL: %s", url)));
+    ereport(NOTICE, (errmsg("DEBUG: GET-TO-FILE Request Path: %s", path)));
 
     headers = s3_create_authorization_headers("GET", host, path, "", region, access_key, secret_key, "", 0, "", "");
     
@@ -284,7 +305,7 @@ bool s3_api_put_from_file(const char *endpoint, const char *region, const char *
     long status;
     char payload_hash[65];
     char path[1024];
-    char *host;
+    char host[256], protocol[16];
     FILE *fp;
     size_t file_size;
 
@@ -298,12 +319,7 @@ bool s3_api_put_from_file(const char *endpoint, const char *region, const char *
     file_size = ftell(fp);
     fclose(fp);
 
-    host = strstr(endpoint, "://");
-    if (host) host += 3;
-    else host = (char *)endpoint;
-
-    snprintf(url, sizeof(url), "%s/%s/%s", endpoint, bucket, object_key);
-    snprintf(path, sizeof(path), "/%s/%s", bucket, object_key);
+    build_s3_url(endpoint, bucket, object_key, host, protocol, path, url);
     
     sha256_file_hex(filepath, payload_hash);
 

@@ -3,6 +3,7 @@
 
 SET pg_s3.use_temp_files = true;
 
+SET pg_s3.use_virtual_host = true; -- when locally set to false
 
 -- SET pg_s3.endpoint = 'https://s3.us-east-1.amazonaws.com';
 -- SET pg_s3.region = 'us-east-1';

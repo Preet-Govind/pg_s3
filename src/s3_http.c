@@ -1,7 +1,28 @@
+#include "postgres.h"
+#include "miscadmin.h"
 #include "s3_http.h"
 #include <curl/curl.h>
 #include <stdlib.h>
 #include <string.h>
+
+
+static int progress_callback(void *clientp, double dltotal, double dlnow, double ultotal, double ulnow) {
+    if (InterruptPending) {
+        return 1; // abort libcurl cleanly
+    }
+    
+    if (clientp) {
+        double *last_print = (double *)clientp;
+        if (dlnow > 0 && dlnow - *last_print >= 10 * 1024 * 1024) { // Every 10 MB
+            ereport(NOTICE, (errmsg("Streaming: %ld MB downloaded...", (long)(dlnow / 1024 / 1024))));
+            *last_print = dlnow;
+        } else if (ulnow > 0 && ulnow - *last_print >= 10 * 1024 * 1024) {
+            ereport(NOTICE, (errmsg("Streaming: %ld MB uploaded...", (long)(ulnow / 1024 / 1024))));
+            *last_print = ulnow;
+        }
+    }
+    return 0;
+}
 
 struct MemoryStruct {
   char *memory;
@@ -128,7 +149,22 @@ long s3_http_request_download(const char *url, const char *headers_str, const ch
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteFileCallback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)fp);
 
+
+        double last_print = 0;
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(curl, CURLOPT_PROGRESSFUNCTION, progress_callback);
+        curl_easy_setopt(curl, CURLOPT_PROGRESSDATA, &last_print);
+
+        ereport(NOTICE, (errmsg("Connecting to S3 stream...")));
         res = curl_easy_perform(curl);
+        
+        if (res == CURLE_ABORTED_BY_CALLBACK) {
+            curl_easy_cleanup(curl);
+            if(chunk) curl_slist_free_all(chunk);
+            fclose(fp);
+            CHECK_FOR_INTERRUPTS(); // Throws the exact PostgreSQL cancellation 
+            return 0;
+        }
         if(res == CURLE_OK) {
             curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status_code);
         }
@@ -175,7 +211,22 @@ long s3_http_request_upload(const char *method, const char *url, const char *hea
         curl_easy_setopt(curl, CURLOPT_READDATA, (void *)fp);
         curl_easy_setopt(curl, CURLOPT_INFILESIZE_LARGE, (curl_off_t)file_size);
 
+
+        double last_print = 0;
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(curl, CURLOPT_PROGRESSFUNCTION, progress_callback);
+        curl_easy_setopt(curl, CURLOPT_PROGRESSDATA, &last_print);
+
+        ereport(NOTICE, (errmsg("Connecting to S3 stream...")));
         res = curl_easy_perform(curl);
+        
+        if (res == CURLE_ABORTED_BY_CALLBACK) {
+            curl_easy_cleanup(curl);
+            if(chunk) curl_slist_free_all(chunk);
+            fclose(fp);
+            CHECK_FOR_INTERRUPTS(); // Throws the exact PostgreSQL cancellation error
+            return 0;
+        }
         if(res == CURLE_OK) {
             curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status_code);
         }
