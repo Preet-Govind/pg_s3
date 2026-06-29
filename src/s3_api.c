@@ -32,6 +32,28 @@ static void parse_endpoint(const char *endpoint, char *host, char *protocol) {
     slash = strchr(host, '/');
     if (slash) *slash = '\0';
 }
+// AWS Signature Version 4 requires the canonical query String to be strictly URI-encoded and mathematically sorted by byte value (continuation-token -> list-type -> prefix
+static char *s3_url_encode(const char *str) {
+    const char *hex = "0123456789ABCDEF";
+    char *encoded = malloc(strlen(str) * 3 + 1);
+    char *p = encoded;
+    if (!encoded) return NULL;
+    while (*str) {
+        if ((*str >= 'a' && *str <= 'z') ||
+            (*str >= 'A' && *str <= 'Z') ||
+            (*str >= '0' && *str <= '9') ||
+            *str == '-' || *str == '_' || *str == '.' || *str == '~') {
+            *p++ = *str;
+        } else {
+            *p++ = '%';
+            *p++ = hex[(*str >> 4) & 0xF];
+            *p++ = hex[*str & 0xF];
+        }
+        str++;
+    }
+    *p = '\0';
+    return encoded;
+}
 
 static void build_s3_url(const char *endpoint, const char *bucket, const char *object_key,
                          char *host, char *protocol, char *path, char *url) {
@@ -158,24 +180,34 @@ bool s3_api_delete(const char *endpoint, const char *region, const char *access_
 char* s3_api_list(const char *endpoint, const char *region, const char *access_key, const char *secret_key, const char *bucket, const char *prefix, const char *continuation_token) {
     char host[256], protocol[16];
     char path[1024];
-    char query[2048] = "list-type=2";
+    char query[2048] = "";
     char url[2048];
     char *auth_headers;
     HttpResponse resp;
+    char *encoded_prefix = NULL;
+    char *encoded_token = NULL;
 
     build_s3_url(endpoint, bucket, NULL, host, protocol, path, url);
     
+    if (continuation_token && continuation_token[0]) {
+        encoded_token = s3_url_encode(continuation_token);
+        snprintf(query + strlen(query), sizeof(query) - strlen(query), "continuation-token=%s&", encoded_token);
+    }
+
+    snprintf(query + strlen(query), sizeof(query) - strlen(query), "list-type=2");
+
     if (prefix && prefix[0]) {
         const char *safe_prefix = prefix[0] == '/' ? prefix + 1 : prefix;
-        snprintf(query + strlen(query), sizeof(query) - strlen(query), "&prefix=%s", safe_prefix);
-    }
-    if (continuation_token && continuation_token[0]) {
-        snprintf(query + strlen(query), sizeof(query) - strlen(query), "&continuation-token=%s", continuation_token);
+        encoded_prefix = s3_url_encode(safe_prefix);
+        snprintf(query + strlen(query), sizeof(query) - strlen(query), "&prefix=%s", encoded_prefix);
     }
     
     snprintf(url, sizeof(url), "%s%s%s?%s", protocol, host, path, query);
     
     auth_headers = s3_create_authorization_headers("GET", host, path, query, region, access_key, secret_key, NULL, 0, NULL, NULL);
+    
+    if (encoded_prefix) free(encoded_prefix);
+    if (encoded_token) free(encoded_token);
     
     resp = s3_http_request("GET", url, auth_headers, NULL, 0, NULL);
     free(auth_headers);
